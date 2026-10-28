@@ -1,0 +1,20 @@
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Os testes usam o post-processor jwt() do spring-security-test; o decoder nunca é chamado.
+          issuer-uri: http://issuer.test
+          jwk-set-uri: http://issuer.test/jwks
+
+app:
+  provider:
+    api-key: test-key
+    connect-timeout: 500ms
+    read-timeout: 500ms
+  dispatch:
+    enabled: false
+    lease: 30s
+    max-attempts: 3
+    base-backoff: 0s
+    max-backoff: 5m # base-backoff 0 => retries imediatos; o teto só limita o Retry-After
