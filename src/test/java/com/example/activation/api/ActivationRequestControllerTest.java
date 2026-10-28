@@ -116,7 +116,9 @@ class ActivationRequestControllerTest {
         var body = "{\"externalId\":\"" + "A".repeat(20_000) + "\"}";
 
         mvc.perform(post("/api/v1/requests").with(writer("erp")).contentType(MediaType.APPLICATION_JSON).content(body))
-                .andExpect(status().isPayloadTooLarge());
+                .andExpect(status().isPayloadTooLarge())
+                .andExpect(content().contentType("application/problem+json;charset=UTF-8"))
+                .andExpect(jsonPath("$.title").value("Corpo da requisição inválido"));
         verifyNoInteractions(service);
     }
 
@@ -151,7 +153,8 @@ class ActivationRequestControllerTest {
     void pageSizeAboveLimitReturns400() throws Exception {
         mvc.perform(get("/api/v1/requests").param("size", "500").with(reader("erp")))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errors[0].field").value("size"));
+                .andExpect(jsonPath("$.errors[0].field").value("size"))
+                .andExpect(jsonPath("$.errors[0].message").value("deve estar entre 1 e 100"));
     }
 
     @Test

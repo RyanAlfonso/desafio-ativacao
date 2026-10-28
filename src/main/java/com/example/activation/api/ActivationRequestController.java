@@ -57,11 +57,13 @@ public class ActivationRequestController {
     @GetMapping
     public PageResponse<ActivationRequestResponse> search(
             @RequestParam(required = false) RequestStatus status,
-            @RequestParam(required = false) @Size(max = 64) String customerId,
-            @RequestParam(defaultValue = "0") @Min(0) int page,
-            @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size,
+            @RequestParam(required = false) @Size(max = 64, message = "deve ter no máximo 64 caracteres") String customerId,
+            @RequestParam(defaultValue = "0") @Min(value = 0, message = "deve ser maior ou igual a 0") int page,
+            @RequestParam(defaultValue = "20") @Min(value = 1, message = "deve estar entre 1 e 100")
+            @Max(value = 100, message = "deve estar entre 1 e 100") int size,
             @AuthenticationPrincipal Jwt jwt) {
-        var pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        // id como desempate: sem ele, registros com o mesmo createdAt podem trocar de página entre chamadas.
+        var pageable = PageRequest.of(page, size, Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id")));
         var result = service.search(status, customerId, ClientIdentity.of(jwt), pageable);
         return PageResponse.of(result, ActivationRequestResponse::from);
     }

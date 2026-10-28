@@ -4,6 +4,7 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.slf4j.MDC;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
@@ -12,6 +13,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Recusa corpos maiores que o necessário antes de qualquer parsing. O payload válido tem
@@ -32,9 +34,11 @@ public class RequestSizeLimitFilter extends OncePerRequestFilter {
         if (hasBody && (length < 0 || length > MAX_BODY_BYTES)) {
             response.setStatus(length < 0 ? HttpStatus.LENGTH_REQUIRED.value() : HttpStatus.PAYLOAD_TOO_LARGE.value());
             response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
+            response.setCharacterEncoding(StandardCharsets.UTF_8.name());
             response.getWriter().write("""
-                    {"title":"Corpo da requisição inválido","status":%d,"detail":"O corpo deve ter Content-Length de até %d bytes."}"""
-                    .formatted(response.getStatus(), MAX_BODY_BYTES));
+                    {"type":"https://api.example.com/problems/invalid-body-size","title":"Corpo da requisição inválido",\
+                    "status":%d,"detail":"O corpo deve ter Content-Length de até %d bytes.","traceId":"%s"}"""
+                    .formatted(response.getStatus(), MAX_BODY_BYTES, MDC.get(CorrelationIdFilter.MDC_KEY)));
             return;
         }
         chain.doFilter(request, response);
