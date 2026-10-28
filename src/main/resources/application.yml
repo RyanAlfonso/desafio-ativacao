@@ -4,6 +4,14 @@ spring:
   threads:
     virtual:
       enabled: true
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  task:
+    scheduling:
+      shutdown:
+        # deixa o ciclo do dispatcher em andamento terminar antes de fechar o pool de conexões
+        await-termination: true
+        await-termination-period: 15s
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/activation}
     username: ${DB_USERNAME:activation}
@@ -34,6 +42,8 @@ spring:
 server:
   port: ${PORT:8080}
   shutdown: graceful
+  # atrás de load balancer/ingress: Location e URLs usam o host/esquema originais (X-Forwarded-*)
+  forward-headers-strategy: native
   error:
     include-stacktrace: never
     include-message: never
