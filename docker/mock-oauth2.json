@@ -1,0 +1,41 @@
+{
+  "interactiveLogin": false,
+  "tokenCallbacks": [
+    {
+      "issuerId": "default",
+      "tokenExpiry": 3600,
+      "requestMappings": [
+        {
+          "requestParam": "client_id",
+          "match": "erp-writer",
+          "claims": {
+            "sub": "erp-writer",
+            "client_id": "erp-writer",
+            "aud": ["activation-api"],
+            "scope": "activation:read activation:write"
+          }
+        },
+        {
+          "requestParam": "client_id",
+          "match": "portal-reader",
+          "claims": {
+            "sub": "portal-reader",
+            "client_id": "portal-reader",
+            "aud": ["activation-api"],
+            "scope": "activation:read"
+          }
+        },
+        {
+          "requestParam": "client_id",
+          "match": "other-audience",
+          "claims": {
+            "sub": "other-audience",
+            "client_id": "other-audience",
+            "aud": ["another-api"],
+            "scope": "activation:read activation:write"
+          }
+        }
+      ]
+    }
+  ]
+}
