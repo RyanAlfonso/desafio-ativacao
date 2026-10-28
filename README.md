@@ -77,7 +77,8 @@ Suba o banco e os mocks (`docker compose up postgres provider-mock mock-oauth2`)
 | `GET` | `/api/v1/requests?status=&customerId=&page=&size=` | `activation:read` | `200` paginado (`size` 1–100, padrão 20, ordem `createdAt desc`) |
 
 Validação do corpo: `externalId`, `customerId` e `productCode` obrigatórios, até 64 caracteres,
-apenas `[A-Za-z0-9._-]`. Corpo limitado a 16 KB (`413`). Datas em UTC, ISO-8601.
+apenas `[A-Za-z0-9._-]`. Corpo limitado a 16 KB (`413`; sem `Content-Length`, `411`). Datas em UTC, ISO-8601.
+A listagem ordena por `createdAt desc, id desc` (o `id` desempata para a paginação ser estável).
 
 Resposta:
 
@@ -192,7 +193,10 @@ O dispatcher (a cada 1 s) faz:
 
 Se a aplicação cair entre o commit e a chamada (ou durante ela), o lease expira e a solicitação volta a ser
 elegível sozinha — o mesmo mecanismo que agenda retries faz a **reconciliação** de solicitações presas em
-`PROCESSING`, sem job separado. `SKIP LOCKED` permite várias instâncias sem enviar a mesma solicitação duas vezes
+`PROCESSING`, sem job separado. Se o lease expira depois da **última** tentativa permitida, a solicitação vai
+para `FAILED` sem nova chamada — o limite de tentativas vale também para quedas, não só para erros do provedor.
+Uma exceção inesperada no próprio cliente HTTP (bug, configuração inválida) é tratada como falha temporária,
+seguindo o mesmo backoff e limite. `SKIP LOCKED` permite várias instâncias sem enviar a mesma solicitação duas vezes
 (também testado em `ConcurrencyIT`).
 
 **Idempotência no provedor:** toda chamada envia `Idempotency-Key: <id da solicitação>` (o mesmo em todas as
@@ -241,7 +245,7 @@ parâmetro fora do limite, método não suportado...) também saem como Problem 
 | Escopo insuficiente | 403 |
 | Registro inexistente (ou de outro consumidor) | 404 |
 | Duplicada com conteúdo diferente | 409 `duplicate-external-id` |
-| Corpo > 16 KB | 413 |
+| Corpo > 16 KB / sem `Content-Length` | 413 / 411 |
 | Erro inesperado | 500 com mensagem genérica + `traceId`; stack trace só no log |
 
 **Erro de integração** não aparece como erro HTTP do POST (que é assíncrono): aparece no recurso, como
@@ -292,15 +296,16 @@ olhando o `pg_stat_statements` real, em vez de criar índices por antecipação.
 
 ## Estratégia de testes
 
-98 testes. A divisão segue "o que precisa de quê para provar algo":
+103 testes (87 unitários/fatia + 16 de integração). A divisão segue "o que precisa de quê para provar algo":
 
 | Tipo | Classe(s) | O que prova | Por que nesse nível |
 |---|---|---|---|
 | Unitário puro | `ActivationRequestTest` | transições válidas/inválidas, tabela completa de estados | regra de domínio, sem Spring: milissegundos |
 | Unitário puro | `RetryPolicyTest`, `HttpActivationProviderClassifyTest` | backoff/jitter/teto; classificação de cada status HTTP e `Retry-After` | lógica pura, muitos casos |
 | Unitário com Mockito | `ActivationRequestServiceTest` | retry vs. conflito, **corrida perdida no INSERT**, erro de integridade não relacionado | o caso de corrida é difícil de forçar com banco real de forma determinística |
+| Unitário com Mockito | `ActivationDispatcherTest` | exceção inesperada no cliente vira retry com backoff; resultado de tentativa que não é mais a vigente é descartado; métricas | exige intercalar eventos num ponto exato da execução |
 | Fatia web (`@WebMvcTest`) | `ActivationRequestControllerTest` | validação, 201/200/409/404/400/413/500, Problem Details, **401/403** | camada HTTP + segurança, serviço mockado |
-| Integração (Testcontainers + WireMock) | `ActivationRequestApiIT` | fluxo completo API → PostgreSQL → dispatcher → provedor: sucesso, 400, 500 → retry → sucesso, 503 até o limite, `Retry-After`, **timeout**, conexão resetada, headers enviados (`Idempotency-Key`, correlação, credencial), isolamento entre consumidores, listagem/paginação | comportamento depende do banco real (constraint, `SKIP LOCKED`, tipos) e de HTTP real (timeouts) |
+| Integração (Testcontainers + WireMock) | `ActivationRequestApiIT` | fluxo completo API → PostgreSQL → dispatcher → provedor: sucesso, 400, 500 → retry → sucesso, 503 até o limite, `Retry-After`, **timeout**, conexão resetada, headers enviados (`Idempotency-Key`, correlação, credencial), isolamento entre consumidores, listagem/paginação, **reconciliação**: solicitação deixada em `PROCESSING` por uma instância que caiu é reenviada quando o lease expira, ou vai para `FAILED` se já estava na última tentativa | comportamento depende do banco real (constraint, `SKIP LOCKED`, tipos) e de HTTP real (timeouts) |
 | Concorrência (Testcontainers) | `ConcurrencyIT` | 16 POSTs simultâneos com o mesmo `externalId` → **1 registro**; 16 dispatchers simultâneos → **cada solicitação enviada exatamente 1 vez** | só o PostgreSQL real prova constraint e `SKIP LOCKED` (H2 não reproduz) |
 | Arquitetura | `ArchitectureTest` | regras de dependência entre pacotes | evita erosão silenciosa |
 
@@ -369,8 +374,11 @@ alertas de SLO e o rollback prontos. E reproduzir o cenário em teste de carga c
   `PROVIDER_API_KEY`) injetados do cofre de segredos do provedor cloud, nunca na imagem.
 - Em Kubernetes (ou ECS): ≥ 2 réplicas, `readinessProbe` em `/actuator/health/readiness`, `livenessProbe` em
   `/actuator/health/liveness`, requests/limits de CPU e memória, `server.shutdown=graceful` + `terminationGracePeriodSeconds`
-  para terminar requisições em andamento. Uma solicitação que estava sendo enviada quando o pod morreu é retomada
-  pelo lease.
+  para terminar requisições em andamento; o agendador também espera o ciclo do dispatcher em curso terminar
+  (`spring.task.scheduling.shutdown.await-termination`). Uma solicitação que estava sendo enviada quando o pod morreu
+  é retomada pelo lease.
+- Atrás do ingress/load balancer, `server.forward-headers-strategy=native` faz o header `Location` usar o host e o
+  esquema públicos (`X-Forwarded-*`).
 - Banco gerenciado (RDS/Cloud SQL/Azure Database) com backup e réplica; Flyway roda no startup (ou como job de
   migração separado antes do rollout, se houver migrações pesadas).
 - Logs estruturados em JSON (`LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`, já usado no compose) com `traceId` em cada linha;
