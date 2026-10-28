@@ -10,7 +10,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import java.time.Instant;
@@ -44,6 +46,32 @@ class ActivationRequestApiIT extends IntegrationTest {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private JdbcTemplate jdbc;
+
+    @Test
+    void requestLeftInProcessingByACrashedInstanceIsResentWhenLeaseExpires() throws Exception {
+        PROVIDER.stubFor(post(ACTIVATE).willReturn(ok()));
+        String id = create("EXT-1", "erp", 201);
+        simulateExpiredLease(id, 1);
+
+        dispatcher.dispatchDue();
+
+        assertStatus(id, RequestStatus.COMPLETED, 2);
+        PROVIDER.verify(1, postRequestedFor(urlEqualTo(ACTIVATE)).withHeader("Idempotency-Key", equalTo(id)));
+    }
+
+    @Test
+    void expiredLeaseAfterLastAllowedAttemptFailsWithoutCallingTheProviderAgain() throws Exception {
+        String id = create("EXT-1", "erp", 201);
+        simulateExpiredLease(id, 3); // max-attempts = 3 no perfil de teste
+
+        dispatcher.dispatchDue();
+
+        assertStatus(id, RequestStatus.FAILED, 3);
+        PROVIDER.verify(0, postRequestedFor(urlEqualTo(ACTIVATE)));
+    }
+
     @Test
     void createdRequestIsPersistedAndReturnedByGet() throws Exception {
         String id = create("EXT-1", "erp", 201);
@@ -68,7 +96,7 @@ class ActivationRequestApiIT extends IntegrationTest {
     void sameExternalIdWithDifferentProductReturns409() throws Exception {
         create("EXT-1", "erp", 201);
 
-        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/v1/requests")
+        mvc.perform(MockMvcRequestBuilders.post("/api/v1/requests")
                         .with(client("erp")).contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"externalId":"EXT-1","customerId":"CUST-1","productCode":"TV-100"}"""))
@@ -206,7 +234,7 @@ class ActivationRequestApiIT extends IntegrationTest {
     }
 
     private String create(String externalId, String clientId, int expectedStatus) throws Exception {
-        var response = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/v1/requests")
+        var response = mvc.perform(MockMvcRequestBuilders.post("/api/v1/requests")
                         .with(client(clientId))
                         .header("X-Correlation-Id", "corr-12345678")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -216,6 +244,14 @@ class ActivationRequestApiIT extends IntegrationTest {
                 .andReturn().getResponse().getContentAsString();
         JsonNode json = objectMapper.readTree(response);
         return json.get("id").asText();
+    }
+
+    /** Estado deixado por uma instância que reservou a solicitação e caiu antes de gravar o resultado. */
+    private void simulateExpiredLease(String id, int attempts) {
+        jdbc.update("""
+                UPDATE activation_request
+                   SET status = 'PROCESSING', attempts = ?, next_attempt_at = now() - interval '1 second'
+                 WHERE id = ?""", attempts, UUID.fromString(id));
     }
 
     private void assertStatus(String id, RequestStatus status, int attempts) throws Exception {
